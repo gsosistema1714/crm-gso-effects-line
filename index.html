@@ -14204,6 +14204,12 @@ body.theme-dark #view-laboratorio .btn-amber { background: rgba(216, 168, 68, .1
           </div>
         </div>
 
+        <div class="form-row hidden" id="f-do-alexandre-row">
+          <div>
+            <label class="form-label" style="display:flex;gap:8px;align-items:center;cursor:pointer;"><input type="checkbox" id="f-do-alexandre"> Venda do Alexandre — já está na ficha dele (não soma de novo no faturamento)</label>
+          </div>
+        </div>
+
         <div class="conditional-row hidden" id="credito-row">
           <div class="form-row" style="margin-bottom:0;">
             <div>
@@ -16321,6 +16327,7 @@ function saleToRow(v) {
       estoqueBaixado: v.estoqueBaixado || null,
       tipoVenda: v.tipoVenda || '',
       semBaixaEstoque: Boolean(v.semBaixaEstoque) || undefined,
+      doAlexandre: Boolean(v.doAlexandre) || undefined,
       pecasBaixadas: (Array.isArray(v.pecasBaixadas) && v.pecasBaixadas.length) ? v.pecasBaixadas : undefined
     }
   };
@@ -16365,6 +16372,7 @@ function rowToSale(r) {
     estoqueBaixado: Array.isArray(r.metadata?.estoqueBaixado) ? r.metadata.estoqueBaixado : null,
     tipoVenda: r.metadata?.tipoVenda || '',
     semBaixaEstoque: Boolean(r.metadata?.semBaixaEstoque),
+    doAlexandre: Boolean(r.metadata?.doAlexandre),
     pecasBaixadas: Array.isArray(r.metadata?.pecasBaixadas) ? r.metadata.pecasBaixadas : null
   };
 }
@@ -18653,6 +18661,10 @@ function canonicalPayment(value) {
   return value;
 }
 function paymentDisplay(venda) {
+  const t = paymentDisplayBase(venda);
+  return venda && venda.doAlexandre ? t + ' · Alexandre (ficha)' : t;
+}
+function paymentDisplayBase(venda) {
   if (typeof saleIsSplitPayment === 'function' && saleIsSplitPayment(venda)) {
     return salePaymentParts(venda).map(p => `${p.forma}${p.forma === 'Crédito' && p.parcelas ? ' ' + p.parcelas + 'x' : ''} ${fmtBR(p.valor)}`).join(' + ');
   }
@@ -20535,11 +20547,15 @@ function finVendasDoMes(mes) {
       }
       return;
     }
+    if (saleIsAlexandre(v)) {
+      if (dv && finMesKey(dv) === mes) r.naoSomadas.push({ ...base, data: v.data, valor: total, motivo: 'Venda do Alexandre: o dinheiro entra pelos pagamentos da ficha dele e o custo pelas entregas (não soma de novo)' });
+      return;
+    }
     if (dv && finMesKey(dv) === mes) r.vendido += total;
     const entradas = saleRevenueEntries(v).filter(e => { const d = dashboardDateObj(e.data); return d && finMesKey(d) === mes; });
     if (dv && finMesKey(dv) === mes) {
       // parte desta venda que NÃO foi somada neste mês (boleto não pago, anotado ainda em aberto)
-      if (saleIsBoleto(v) && !saleBoletoPago(v)) r.naoSomadas.push({ ...base, data: v.data, valor: total, motivo: 'Boleto ainda não pago por completo: só entra quando todas as parcelas forem pagas' });
+      if (saleIsBoleto(v) && !saleBoletoPago(v)) r.naoSomadas.push({ ...base, data: v.data, valor: round2(saleBoletoParcelas(v).filter(p => !p.pago).reduce((a, p) => a + (Number(p.valor) || 0), 0)) || total, motivo: 'Parcelas de boleto ainda não pagas: cada parcela entra no dia em que for paga' });
       else if (saleIsAnotado(v) && saleAnotadoSaldoDevedor(v) > 0.009) r.naoSomadas.push({ ...base, data: v.data, valor: saleAnotadoSaldoDevedor(v), motivo: 'Anotado: saldo ainda não recebido (cada pagamento entra no dia em que for registrado)' });
     }
     if (!entradas.length) return;
@@ -20548,7 +20564,7 @@ function finVendasDoMes(mes) {
     if (custoV == null) r.semCusto++;
     r.fat += total * prop; r.vendas += prop >= 0.999 ? 1 : prop;
     r.custo += (custoV || 0) * prop; r.fiscal += saleFiscalDescontado(v) * prop;
-    entradas.forEach(e => r.linhas.push({ ...base, data: e.data, valor: e.valor, custo: custoV == null ? null : round2(custoV * e.valor / total), obs: saleIsBoleto(v) ? 'Boleto pago (todas as parcelas)' : saleIsAnotado(v) ? 'Pagamento de venda anotada' : (entradas.length > 1 ? 'Parte da venda' : (v.data !== e.data ? 'Recebimento' : '')), pagNota: v.pagamentoDetalhes && v.pagamentoDetalhes.observacao || '' }));
+    entradas.forEach(e => r.linhas.push({ ...base, data: e.data, valor: e.valor, custo: custoV == null ? null : round2(custoV * e.valor / total), obs: saleIsBoleto(v) ? (entradas.length > 1 ? 'Parcelas de boleto pagas' : 'Parcela de boleto paga') : saleIsAnotado(v) ? 'Pagamento de venda anotada' : (entradas.length > 1 ? 'Parte da venda' : (v.data !== e.data ? 'Recebimento' : '')), pagNota: v.pagamentoDetalhes && v.pagamentoDetalhes.observacao || '' }));
     r.canais[canal] += total * prop;
     saleCatalogItems(v).forEach(it => {
       const k = it.produto + ' ' + it.tamanho; const o = r.produtos[k] = r.produtos[k] || { nome: k, qtd: 0, fat: 0 };
@@ -21828,22 +21844,28 @@ function saleAnotadoQuitado(venda) {
 // Venda do Mercado Livre: só mexe no estoque (e no custo da mercadoria). O dinheiro dela entra pelas
 // "Entradas Mercado Livre" lançadas na aba Financeiro > Fechamento do mês.
 function saleIsML(venda) { return /mercado\s*livre/i.test((venda && venda.pagamento) || ''); }
+// Venda do Alexandre (marcada na venda): o dinheiro dela já entra pelos "Pagamentos" da ficha dele e o custo pelas
+// "Entregas" — contar a nota fiscal também seria contar duas vezes. Fica na lista, mas não soma no faturamento nem no custo.
+function saleIsAlexandre(venda) { return Boolean(venda && venda.doAlexandre); }
 function saleCountsInRevenue(venda) {
-  if (saleIsML(venda)) return false;
+  if (saleIsML(venda) || saleIsAlexandre(venda)) return false;
   if (saleIsBoleto(venda)) return saleBoletoPago(venda);
   if (saleIsAnotado(venda)) return false; // conta via saleRevenueEntries, por pagamento — nunca como valor único
   return true;
 }
 // Lista de {data, valor} — como o valor desta venda deve entrar no faturamento ao longo do
-// tempo. Venda normal: uma entrada, na data da venda. Boleto: uma entrada (o total), só quando
-// todas as parcelas estiverem pagas. Anotado: uma entrada por pagamento já registrado, cada
+// tempo. Venda normal: uma entrada, na data da venda. Boleto: uma entrada por parcela paga, no dia
+// em que foi paga. Anotado: uma entrada por pagamento já registrado, cada
 // uma na sua própria data — por isso uma venda anotada paga em partes pode contar em vários
 // meses diferentes.
 function saleRevenueEntries(venda) {
-  if (saleIsML(venda)) return [];
+  if (saleIsML(venda) || saleIsAlexandre(venda)) return [];
   if (saleIsBoleto(venda)) {
-    if (!saleBoletoPago(venda)) return [];
-    return [{ data: saleRevenueDate(venda), valor: saleBoletoValorTotal(venda) }];
+    // Boleto parcelado: cada parcela entra no dia em que foi paga (com multa/juros), sem esperar as outras.
+    return saleBoletoParcelas(venda)
+      .filter(p => p && p.pago && (p.dataRecebimento || p.vencimento))
+      .map(p => ({ data: p.dataRecebimento || p.vencimento, valor: boletoParcelaValorTotal(p) }))
+      .filter(e => e.valor);
   }
   if (saleIsAnotado(venda)) {
     return saleAnotadoPagamentos(venda)
@@ -26636,7 +26658,7 @@ function reportValidSales() {
   return (state.vendas || []).filter(v => v && v.data).map(v => ({
     ...v,
     _date: dateOnly(v.data) || new Date(v.data),
-    _valor: saleIsML(v) ? 0 : (parseFloat(v.valor) || 0)
+    _valor: (saleIsML(v) || saleIsAlexandre(v)) ? 0 : (parseFloat(v.valor) || 0)
   })).filter(v => v._date && !Number.isNaN(v._date.getTime()));
 }
 
@@ -28712,6 +28734,8 @@ function initEditVenda(id) {
   document.getElementById('f-aroma-custom-row').classList.add('hidden');
   if (!vendaModoLojista) atualizarTipoVendaPeloCliente();
   document.getElementById('f-tipo-venda-row').classList.toggle('hidden', vendaModoLojista || !isAdminUser());
+  document.getElementById('f-do-alexandre-row').classList.toggle('hidden', !isAdminUser());
+  document.getElementById('f-do-alexandre').checked = Boolean(venda.doAlexandre);
   const nfNumeroInput = document.getElementById('f-nf-numero');
   if (nfNumeroInput) nfNumeroInput.value = saleNfNumber(venda) || '';
 
@@ -29174,6 +29198,8 @@ function initNova() {
   document.getElementById('f-aroma-custom-row').classList.add('hidden');
   setTipoVendaForm('');
   document.getElementById('f-tipo-venda-row').classList.toggle('hidden', vendaModoLojista || !isAdminUser());
+  document.getElementById('f-do-alexandre-row').classList.toggle('hidden', !isAdminUser());
+  document.getElementById('f-do-alexandre').checked = false;
   currentSaleItems = [];
   renderSaleItemsList();
   popularSelectProdutoEstoque('f-estoque-produto', null);
@@ -29385,6 +29411,7 @@ async function salvarVenda() {
     pagamento,
     pagamentoDetalhes,
     tipoVenda: document.getElementById('f-tipo-venda').value || '',
+    doAlexandre: isAdminUser() ? Boolean(document.getElementById('f-do-alexandre')?.checked) : Boolean(existingVenda && existingVenda.doAlexandre),
     vendedor: canonicalSellerName(document.getElementById('f-vend').value),
     nfNumber: document.getElementById('f-nf-numero')?.value.trim() || '',
     obs: document.getElementById('f-obs').value.trim(),
