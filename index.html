@@ -21849,7 +21849,7 @@ function saleIsML(venda) { return /mercado\s*livre/i.test((venda && venda.pagame
 function saleIsAlexandre(venda) { return Boolean(venda && venda.doAlexandre); }
 function saleCountsInRevenue(venda) {
   if (saleIsML(venda) || saleIsAlexandre(venda)) return false;
-  if (saleIsBoleto(venda)) return saleBoletoPago(venda);
+  if (saleIsBoleto(venda)) return saleBoletoParcelas(venda).some(p => p && p.pago);
   if (saleIsAnotado(venda)) return false; // conta via saleRevenueEntries, por pagamento — nunca como valor único
   return true;
 }
@@ -21876,6 +21876,10 @@ function saleRevenueEntries(venda) {
 }
 // Valor final do boleto já somando multa/juros manuais de todas as parcelas — é esse
 // total que conta como "pago" quando todas as parcelas são confirmadas.
+// Só as parcelas já pagas (cada uma entra no faturamento no dia em que foi paga).
+function saleBoletoValorRecebido(venda) {
+  return round2(saleBoletoParcelas(venda).filter(p => p && p.pago).reduce((sum, p) => sum + boletoParcelaValorTotal(p), 0));
+}
 function saleBoletoValorTotal(venda) {
   return round2(saleBoletoParcelas(venda).reduce((sum, p) => sum + boletoParcelaValorTotal(p), 0));
 }
@@ -22376,7 +22380,7 @@ function renderDash() {
   // Toda venda de hoje conta na quantidade (o produto já saiu do estoque), mas o valor
   // faturado só entra quando o boleto/anotado for de fato recebido.
   const vendasHojeComReceita = vendasHoje.filter(saleCountsInRevenue);
-  const valorHoje = vendasHojeComReceita.reduce((sum, venda) => sum + (saleIsBoleto(venda) ? saleBoletoValorTotal(venda) : Number(venda.valor || 0)), 0);
+  const valorHoje = vendasHojeComReceita.reduce((sum, venda) => sum + (saleIsBoleto(venda) ? saleBoletoValorRecebido(venda) : Number(venda.valor || 0)), 0);
   const ticketHoje = vendasHojeComReceita.length ? valorHoje / vendasHojeComReceita.length : 0;
 
   const finance = dashboardFinanceStats();
@@ -31067,7 +31071,7 @@ function intelRenderOverview() {
   // não) — só o dinheiro (valor, ticket médio, lucro) espera o boleto ser marcado como pago.
   const vendasHojeTodas = dashboardSalesInRange(hoje, hoje);
   const vendasHoje = vendasHojeTodas.filter(saleCountsInRevenue);
-  const valorHoje = vendasHoje.reduce((sum, venda) => sum + (saleIsBoleto(venda) ? saleBoletoValorTotal(venda) : Number(venda.valor || 0)), 0);
+  const valorHoje = vendasHoje.reduce((sum, venda) => sum + (saleIsBoleto(venda) ? saleBoletoValorRecebido(venda) : Number(venda.valor || 0)), 0);
   const ticketHoje = vendasHoje.length ? valorHoje / vendasHoje.length : 0;
   let lucroHoje = 0, lucroHojeIncompleto = false;
   vendasHoje.forEach(venda => {
