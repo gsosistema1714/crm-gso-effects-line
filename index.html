@@ -37091,6 +37091,15 @@ async function renderIndicadores() {
     var client = getSupabaseClient();
     var baixas = [];
     var naoEncontrados = [];
+    // A lista de produtos do estoque pode ainda não ter carregado neste computador (ou ter ficado vazia
+    // por uma falha de rede): relê do servidor antes de dar "não encontrei" pra uma venda que tem produto cadastrado.
+    var recarregouProdutos = false;
+    async function recarregarProdutosUmaVez() {
+      if (recarregouProdutos) return;
+      recarregouProdutos = true;
+      try { await loadProdutos(); } catch (e) { console.warn('Não consegui recarregar os produtos do estoque:', e); }
+    }
+    if (!state.produtos || !state.produtos.length) await recarregarProdutosUmaVez();
     for (var i = 0; i < itens.length; i++) {
       var it = itens[i];
       var qtd = Number(it.qtd) || 0;
@@ -37103,6 +37112,10 @@ async function renderIndicadores() {
       // pro mesmo produto.
       var produto = it.produtoEnvasadoId ? state.produtos.find(function (p) { return p.id === it.produtoEnvasadoId; }) : null;
       if (!produto) produto = encontrarProdutoEnvasadoPara(it.nomeProduto, it.tamanho, it.aroma);
+      if (!produto && !recarregouProdutos) {
+        await recarregarProdutosUmaVez();
+        produto = encontrarProdutoEnvasadoPara(it.nomeProduto, it.tamanho, it.aroma);
+      }
       if (!produto) {
         naoEncontrados.push([it.nomeProduto, it.tamanho, it.aroma].filter(Boolean).join(' '));
         continue;
